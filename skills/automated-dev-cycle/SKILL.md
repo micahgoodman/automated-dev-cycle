@@ -12,7 +12,8 @@ A meta-skill that orchestrates the complete automated development workflow:
 2. **Tree Planning** — Break down each phase into hierarchical tasks (auto-generated from spec)
 3. **Export** — Export the tree structure to JSON
 4. **Recursive Development** — Execute tasks with verification at every level
-5. **Review Phase** — Per-task reviews, holistic review, and validation review
+5. **Design Documentation** — Document the as-built design via inline `@design` annotations
+6. **Review Phase** — Per-task reviews, holistic review, and validation review
 
 ## Workflow Overview
 
@@ -40,8 +41,9 @@ A meta-skill that orchestrates the complete automated development workflow:
 │ │ 1. Tree-planner auto-generates tasks from spec          │ │
 │ │ 2. Export to JSON                                       │ │
 │ │ 3. Recursive-dev executes with verification             │ │
-│ │ 4. Review phase (per-task, holistic, validation)        │ │
-│ │ 5. Advance to next phase                                │ │
+│ │ 4. Design documentation (@design annotations)          │ │
+│ │ 5. Review phase (per-task, holistic, validation)        │ │
+│ │ 6. Advance to next phase                                │ │
 │ └─────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -90,7 +92,7 @@ Start the full automated development cycle.
      - Guide through each phase's 6 sections
      - Export with phase markers when complete
 
-   After structured-planning completes, continue to step 4.
+   **CRITICAL:** After structured-planning completes and exports, you MUST immediately continue to step 4. Do NOT call ExitPlanMode or wait for user approval. The structured spec is complete — now proceed to initialize state and start the first phase automatically.
 
 4. **Initialize Multi-Phase State**
    ```bash
@@ -139,29 +141,28 @@ Tell user: "Task tree generated. Starting recursive development..."
 
 When recursive-dev completes its review phase (state.json shows `phase: "complete"`):
 - The recursive-dev stop hook will output a completion message
-- Tell user: "Phase $N complete! Run `/automated-dev-cycle resume` to continue to the next phase."
+- Tell user: "Phase $N complete!"
 
-**Note:** Phase transitions are NOT automatic. The user must run `/automated-dev-cycle resume` to:
+**Step 5: Automatic Phase Transition**
+
+Within an active `/automated-dev-cycle` session, phase transitions happen automatically:
 1. Mark the completed phase in project-phases state
-2. Start the next phase
+2. Immediately start the next phase (return to Step 1 for new phase)
 
-This design is intentional:
-- Gives user a checkpoint between phases
-- Allows reviewing completed work before proceeding
-- Handles session interruptions gracefully
+**Note:** The `/automated-dev-cycle resume` command is ONLY for resuming after session interruption (e.g., context loss, terminal closed, session timeout). Within a continuous session, you should automatically proceed through all phases without waiting for user input.
 
-**Step 5: Next Phase (via resume)**
-
-When user runs `/automated-dev-cycle resume`:
+**When checking for next phase:**
 ```bash
-# Check recursive-dev state for current session
-SESSION_DIR=$(find ~/.claude/recursive-dev -name "state.json" -exec grep -l "$(pwd)" {} \; | head -1 | xargs dirname)
-STATE=$(cat "$SESSION_DIR/state.json")
-PHASE=$(echo "$STATE" | jq -r '.phase')
+# Check if recursive-dev review is truly complete
+SESSION_ID=$(~/.claude/hooks/lib/recursive-dev-helpers.sh find-session "$(pwd)")
+NEXT_STEP=$(~/.claude/hooks/lib/recursive-dev-helpers.sh next-step "$SESSION_ID")
+STEP=$(echo "$NEXT_STEP" | jq -r '.nextStep')
 
-# If phase complete, advance and start next
-if [ "$PHASE" = "complete" ]; then
-  ~/.claude/hooks/lib/project-phases.sh advance "$(pwd)" "$(basename $SESSION_DIR)"
+if [ "$STEP" = "complete" ]; then
+  # Mark session as complete if not already (validates reviews done)
+  ~/.claude/hooks/lib/recursive-dev-helpers.sh complete-session "$SESSION_ID"
+  # Now advance phase (will verify session phase is "complete")
+  ~/.claude/hooks/lib/project-phases.sh advance "$(pwd)" "$SESSION_ID"
 fi
 ```
 
@@ -175,7 +176,9 @@ If all phases complete:
 
 ### /automated-dev-cycle resume
 
-Resume the development cycle from wherever it left off.
+Resume the development cycle after a session interruption (e.g., context loss, terminal closed, timeout).
+
+**When to use:** This command is ONLY needed when the automated-dev-cycle was interrupted. Within a continuous session, phase transitions happen automatically — you don't need to run resume between phases.
 
 **Actions:**
 
@@ -197,9 +200,9 @@ Resume the development cycle from wherever it left off.
    - If `in_progress`: Check for active recursive-dev session
      - If found: invoke `Skill(skill: "recursive-dev", args: "status")` and continue
      - If not found: restart the phase
-   - If `complete` (shouldn't happen): advance to next phase
+   - If `complete`: advance to next phase and start it
 
-5. Resume the phase development loop.
+5. Resume the phase development loop (automatic transitions from here on).
 
 ### /automated-dev-cycle status
 
@@ -402,13 +405,14 @@ Location: `~/.claude/recursive-dev/project-<hash>.json`
 
 ## Important Notes
 
-1. **Only structured-planning is interactive** — Everything after runs automatically within each phase
+1. **Only structured-planning is interactive** — Everything after runs automatically
 2. **Each phase is independent** — Has its own recursive-dev session
 3. **Trust the structured spec** — Tree-planner auto mode relies on comprehensive specs
-4. **Phase transitions require user action** — Run `/automated-dev-cycle resume` between phases
-5. **Failure prompts user** — Don't silently skip or fail
-6. **Preserve history** — Previous sessions kept for reference
-7. **Archive intelligently** — Collapse completed phases with useful summaries
+4. **Phase transitions are automatic** — Within an active session, proceed through all phases without user input
+5. **Resume is for interruptions only** — `/automated-dev-cycle resume` is for recovering from session interruption, not for normal phase transitions
+6. **Failure prompts user** — Don't silently skip or fail
+7. **Preserve history** — Previous sessions kept for reference
+8. **Archive intelligently** — Collapse completed phases with useful summaries
 
 ## Plan File Detection
 

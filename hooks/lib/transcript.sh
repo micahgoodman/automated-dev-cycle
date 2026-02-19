@@ -83,59 +83,91 @@ extract_modified_files() {
 }
 
 # Check if this conversation has an active recursive-dev session
-# Looks for /recursive-dev command in USER messages only, then verifies
-# there's an active session for the current project directory.
+# SIMPLIFIED: Just scan for any active session matching this project directory.
+# No longer requires transcript detection (which fails after compaction).
 # Usage: get_recursive_dev_session [hook_input_json] [recursive_dir]
 # Returns: Session ID if found and active, empty string if not
 get_recursive_dev_session() {
   local hook_input="${1:-}"
   local recursive_dir="${2:-$HOME/.claude/recursive-dev}"
-  local transcript_path=$(get_transcript_path "$hook_input")
-
-  if [ -z "$transcript_path" ] || [ ! -f "$transcript_path" ]; then
-    echo ""
-    return 0
-  fi
-
-  # Check if any USER message contains /recursive-dev or /automated-dev-cycle command.
-  # Only user messages count - not assistant output, system messages, or hook injections.
-  # We check for both because /automated-dev-cycle invokes /recursive-dev internally.
-  local has_command=$(cat "$transcript_path" 2>/dev/null | jq -r '
-    select(.type == "user") |
-    .message.content[]? |
-    select(type == "string") |
-    select(test("/recursive-dev|/automated-dev-cycle"))
-  ' 2>/dev/null | head -1)
-
-  if [ -z "$has_command" ]; then
-    echo ""
-    return 0
-  fi
-
-  # User invoked /recursive-dev in this conversation.
-  # Find the active session for this project directory.
   local current_dir=$(pwd)
+  local debug_log="/tmp/recursive-dev-session-debug.log"
 
+  {
+    echo "=== $(date -u '+%Y-%m-%dT%H:%M:%SZ') get_recursive_dev_session ==="
+    echo "current_dir: $current_dir"
+    echo "recursive_dir: $recursive_dir"
+  } >> "$debug_log" 2>/dev/null
+
+  # Scan all sessions for one that matches this project and is active
   for session_dir in "$recursive_dir"/*/; do
     [ -d "$session_dir" ] || continue
     local tree_file="$session_dir/tree.json"
     local state_file="$session_dir/state.json"
-    [ -f "$tree_file" ] && [ -f "$state_file" ] || continue
 
-    # Check project directory matches current working directory
+    echo "  Checking: $(basename "$session_dir")" >> "$debug_log" 2>/dev/null
+
+    if [ ! -f "$tree_file" ] || [ ! -f "$state_file" ]; then
+      echo "    Missing tree.json or state.json" >> "$debug_log" 2>/dev/null
+      continue
+    fi
+
+    # Check project directory matches (flexible: prefix match either way)
     local project_dir=$(jq -r '.projectDir // empty' "$tree_file" 2>/dev/null)
-    [ "$project_dir" = "$current_dir" ] || continue
+    echo "    projectDir: $project_dir" >> "$debug_log" 2>/dev/null
 
-    # Check session is active (has currentTask or currentReviewTask)
+    if [ -z "$project_dir" ]; then
+      echo "    Empty projectDir, skip" >> "$debug_log" 2>/dev/null
+      continue
+    fi
+
+    # Match if current_dir starts with project_dir OR project_dir starts with current_dir
+    if [[ "$current_dir" != "$project_dir"* ]] && [[ "$project_dir" != "$current_dir"* ]]; then
+      echo "    Path mismatch, skip" >> "$debug_log" 2>/dev/null
+      continue
+    fi
+    echo "    Path matches!" >> "$debug_log" 2>/dev/null
+
+    # Check session is active via explicit flag OR has currentTask/currentReviewTask/currentDesignTask
+    local is_active=$(jq -r '.active // empty' "$state_file" 2>/dev/null)
     local current_task=$(jq -r '.currentTask // empty' "$state_file" 2>/dev/null)
     local current_review=$(jq -r '.currentReviewTask // empty' "$state_file" 2>/dev/null)
+    local current_design=$(jq -r '.currentDesignTask // empty' "$state_file" 2>/dev/null)
+    local phase=$(jq -r '.phase // "dev"' "$state_file" 2>/dev/null)
 
-    if { [ -n "$current_task" ] && [ "$current_task" != "null" ]; } || \
-       { [ -n "$current_review" ] && [ "$current_review" != "null" ]; }; then
+    {
+      echo "    is_active: '$is_active'"
+      echo "    current_task: '$current_task'"
+      echo "    current_review: '$current_review'"
+      echo "    current_design: '$current_design'"
+      echo "    phase: '$phase'"
+    } >> "$debug_log" 2>/dev/null
+
+    # Skip completed sessions — phase="complete" means all reviews finished
+    if [ "$phase" = "complete" ]; then
+      echo "    Phase complete, not active" >> "$debug_log" 2>/dev/null
+      continue
+    fi
+
+    # Session is active if:
+    # 1. Explicit active flag is true, OR
+    # 2. Has a currentTask (in dev phase), OR
+    # 3. Has a currentReviewTask (in review phase), OR
+    # 4. Has a currentDesignTask (in design-documentation phase)
+    # Note: phase="review" alone is NOT sufficient — old/abandoned review sessions
+    # without a currentReviewTask would loop forever requesting holistic reviews.
+    if [ "$is_active" = "true" ] || \
+       { [ -n "$current_task" ] && [ "$current_task" != "null" ]; } || \
+       { [ -n "$current_review" ] && [ "$current_review" != "null" ]; } || \
+       { [ -n "$current_design" ] && [ "$current_design" != "null" ]; }; then
+      echo "    ACTIVE - returning $(basename "$session_dir")" >> "$debug_log" 2>/dev/null
       echo "$(basename "$session_dir")"
       return 0
+    else
+      echo "    Not active" >> "$debug_log" 2>/dev/null
     fi
   done
 
+  echo "  No active session found" >> "$debug_log" 2>/dev/null
   echo ""
 }

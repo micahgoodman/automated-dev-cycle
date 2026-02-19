@@ -385,8 +385,12 @@ Before moving to the next phase, verify:
 When invoked from `/automated-dev-cycle`:
 - Skip the initial "what project" question (already known from context)
 - Focus on phase breakdown and the 6 sections
-- Export automatically when complete
-- Return control to automated-dev-cycle for tree-planner phase
+- Export automatically when complete (add phase markers)
+- **CRITICAL:** After export completes, DO NOT call ExitPlanMode or wait for user input
+- Instead, simply finish and allow the automated-dev-cycle workflow to continue
+- The calling workflow will proceed to tree-planner automatically
+
+**Important:** When structured-planning is invoked as part of automated-dev-cycle, you are a sub-step in a larger workflow. Your job is to complete the structured spec and export it. The automated-dev-cycle orchestrator will handle what comes next (tree-planner → recursive-dev). Do not attempt to exit plan mode or ask for user approval of the plan — that's the orchestrator's job after ALL phases complete.
 
 ## Storage
 

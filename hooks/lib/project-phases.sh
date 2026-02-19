@@ -26,6 +26,63 @@ get_state_file() {
   echo "$RECURSIVE_DIR/project-$hash.json"
 }
 
+# Find state file by searching existing states
+# Returns the state file path if current dir is within a known project, empty otherwise
+find_state_file() {
+  local current_dir="$1"
+
+  # First, try exact match
+  local exact_match
+  exact_match=$(get_state_file "$current_dir")
+  if [ -f "$exact_match" ]; then
+    echo "$exact_match"
+    return 0
+  fi
+
+  # Search all project state files for one that contains current_dir
+  for state_file in "$RECURSIVE_DIR"/project-*.json; do
+    [ -f "$state_file" ] || continue
+
+    local stored_dir
+    stored_dir=$(jq -r '.projectDir // empty' "$state_file" 2>/dev/null)
+    [ -z "$stored_dir" ] && continue
+
+    # Check if current_dir starts with stored_dir (we're inside the project)
+    # or if stored_dir starts with current_dir (project is inside current dir)
+    if [[ "$current_dir" == "$stored_dir"* ]] || [[ "$stored_dir" == "$current_dir"* ]]; then
+      echo "$state_file"
+      return 0
+    fi
+  done
+
+  # No match found
+  return 1
+}
+
+# Get state file, with fallback to searching
+get_state_file_with_fallback() {
+  local project_dir="$1"
+
+  # Try exact match first
+  local exact
+  exact=$(get_state_file "$project_dir")
+  if [ -f "$exact" ]; then
+    echo "$exact"
+    return 0
+  fi
+
+  # Try fuzzy search
+  local found
+  found=$(find_state_file "$project_dir")
+  if [ -n "$found" ]; then
+    echo "$found"
+    return 0
+  fi
+
+  # Return the expected path (for init, or to report not found)
+  echo "$exact"
+}
+
 # Initialize project phases from a plan file
 init_project_phases() {
   local project_dir="$1"
@@ -95,7 +152,7 @@ init_project_phases() {
 get_current_phase() {
   local project_dir="$1"
   local state_file
-  state_file=$(get_state_file "$project_dir")
+  state_file=$(get_state_file_with_fallback "$project_dir")
 
   if [ ! -f "$state_file" ]; then
     echo '{"found": false, "error": "No project state found"}'
@@ -160,11 +217,24 @@ advance_phase() {
   local project_dir="$1"
   local session_id="${2:-}"
   local state_file
-  state_file=$(get_state_file "$project_dir")
+  state_file=$(get_state_file_with_fallback "$project_dir")
 
   if [ ! -f "$state_file" ]; then
     echo '{"success": false, "error": "No project state found"}'
     return 1
+  fi
+
+  # Validate that recursive-dev review is complete for the session
+  if [ -n "$session_id" ]; then
+    local rd_state_file="$RECURSIVE_DIR/$session_id/state.json"
+    if [ -f "$rd_state_file" ]; then
+      local rd_phase
+      rd_phase=$(jq -r '.phase // "dev"' "$rd_state_file" 2>/dev/null)
+      if [ "$rd_phase" != "complete" ]; then
+        echo "{\"success\": false, \"error\": \"Review not complete for session $session_id (phase: $rd_phase). Run reviews before advancing.\"}"
+        return 1
+      fi
+    fi
   fi
 
   local state
@@ -222,7 +292,7 @@ advance_phase() {
 start_phase() {
   local project_dir="$1"
   local state_file
-  state_file=$(get_state_file "$project_dir")
+  state_file=$(get_state_file_with_fallback "$project_dir")
 
   if [ ! -f "$state_file" ]; then
     echo '{"success": false, "error": "No project state found"}'
@@ -248,7 +318,7 @@ start_phase() {
 get_phase_status() {
   local project_dir="$1"
   local state_file
-  state_file=$(get_state_file "$project_dir")
+  state_file=$(get_state_file_with_fallback "$project_dir")
 
   if [ ! -f "$state_file" ]; then
     echo '{"found": false}'
@@ -291,7 +361,7 @@ get_phase_status() {
 skip_phase() {
   local project_dir="$1"
   local state_file
-  state_file=$(get_state_file "$project_dir")
+  state_file=$(get_state_file_with_fallback "$project_dir")
 
   if [ ! -f "$state_file" ]; then
     echo '{"success": false, "error": "No project state found"}'
@@ -320,7 +390,7 @@ restart_from_phase() {
   local project_dir="$1"
   local phase_num="$2"
   local state_file
-  state_file=$(get_state_file "$project_dir")
+  state_file=$(get_state_file_with_fallback "$project_dir")
 
   if [ ! -f "$state_file" ]; then
     echo '{"success": false, "error": "No project state found"}'
@@ -365,7 +435,7 @@ restart_from_phase() {
 has_project_state() {
   local project_dir="$1"
   local state_file
-  state_file=$(get_state_file "$project_dir")
+  state_file=$(get_state_file_with_fallback "$project_dir")
 
   if [ -f "$state_file" ]; then
     echo "true"
@@ -378,7 +448,7 @@ has_project_state() {
 delete_project_state() {
   local project_dir="$1"
   local state_file
-  state_file=$(get_state_file "$project_dir")
+  state_file=$(get_state_file_with_fallback "$project_dir")
 
   if [ -f "$state_file" ]; then
     rm "$state_file"
@@ -393,7 +463,7 @@ record_failure() {
   local project_dir="$1"
   local error_msg="$2"
   local state_file
-  state_file=$(get_state_file "$project_dir")
+  state_file=$(get_state_file_with_fallback "$project_dir")
 
   if [ ! -f "$state_file" ]; then
     echo '{"success": false, "error": "No project state found"}'

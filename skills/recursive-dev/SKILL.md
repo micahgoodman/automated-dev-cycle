@@ -30,7 +30,7 @@ Each session has state files in `~/.claude/recursive-dev/<session-id>/`.
 
 **Session identification:** The stop hook identifies active recursive-dev sessions by:
 1. Checking if a `/recursive-dev` command appears in any USER message in this conversation
-2. Verifying there's an active session (has `currentTask` or `currentReviewTask`) for the current project directory
+2. Verifying there's an active session (has `currentTask`, `currentDesignTask`, or `currentReviewTask`) for the current project directory
 
 This ensures the hook ONLY activates when the user explicitly invoked `/recursive-dev` — it won't trigger from hook injections, system messages, or other automated prompts.
 
@@ -132,17 +132,43 @@ Order is depth-first, branch-complete:
 4. T2.1 → review T2
 5. Final root review
 
-### Phase 4: Automatic Review Phase
+### Phase 4: Automatic Design Documentation
 
-After all dev tasks pass verification, the system **automatically** transitions to a review phase. This requires no user action — the stop hook handles the transition.
+After all dev tasks pass verification, the system **automatically** transitions to a design-documentation phase. This requires no user action — the stop hook handles the transition.
+
+The design-documentation phase examines the code as it was built and adds structured `@design` annotations documenting the architecture, patterns, and key structural choices that emerged. This is the backward-looking counterpart to structured-planning — documenting what actually got built.
 
 ```
 Dev Loop Completes (all tasks verified)
                 │
                 ▼
 ┌─────────────────────────────────────────────────────┐
+│ Hook sets phase: "design-documentation"              │
+│ For each task in depth-first order:                  │
+│ 1. Hook injects design instruction to main session   │
+│ 2. Main session spawns design subagent via Task tool │
+│    - Subagent has fresh context (no dev transcript)  │
+│    - Subagent reads code, adds @design annotations   │
+│ 3. Main session outputs DESIGN_RESULT line           │
+│ 4. Hook parses, records, advances to next task       │
+│ 5. After all tasks: run design-extract.sh            │
+│    → generates DESIGN.md from inline annotations     │
+└─────────────────────────────────────────────────────┘
+                │
+                ▼
+```
+
+### Phase 5: Automatic Review Phase
+
+After design documentation completes, the system **automatically** transitions to a review phase. Reviewers benefit from the `@design` annotations already present in the code.
+
+```
+Design Documentation Complete (DESIGN.md generated)
+                │
+                ▼
+┌─────────────────────────────────────────────────────┐
 │ Hook sets phase: "review"                            │
-│ Injects: "Development complete, starting review..."  │
+│ Injects: "Starting review..."                        │
 │ Main session cycles → hook fires automatically      │
 └─────────────────────────────────────────────────────┘
                 │
@@ -267,6 +293,32 @@ When a parent task becomes current (after all children pass):
 }
 ```
 
+During design-documentation phase, additional fields are present:
+```json
+{
+  "phase": "design-documentation",
+  "currentDesignTask": "T1.1",
+  "designStatuses": {
+    "T1.1": "documented",
+    "T1.2": "in_progress",
+    "T1": "pending_design"
+  },
+  "designHistory": [
+    {
+      "task": "T1.1",
+      "annotations": 3,
+      "files": ["src/users.ts"],
+      "summary": "Documented REST endpoint design, pagination strategy, auth middleware"
+    }
+  ]
+}
+```
+
+**Design status values:**
+- `pending_design` - Not yet analyzed
+- `in_progress` - Currently being analyzed
+- `documented` - Annotations added
+
 During review phase, additional fields are present:
 ```json
 {
@@ -352,7 +404,7 @@ fi
 ### /recursive-dev status
 
 Show:
-- Current phase (dev or review)
+- Current phase (dev, design-documentation, or review)
 - Current task ID, description, criteria
 - Progress: X/Y tasks complete
 - Iteration count for current task
@@ -404,10 +456,46 @@ The `init-review` command:
 - Initializes reviewStatuses and reviewHistory
 - Preserves modifiedFiles if present
 - Validates JSON before writing
+- **Returns `reviewInstruction` with first task details**
 
-After running the helper, tell the user: "Review phase initialized. The stop hook will now drive the review loop automatically."
+After running the helper, **IMMEDIATELY spawn the first review subagent** using the returned `reviewInstruction`:
 
-**After completing these steps, STOP. Do not do anything else.** When your response completes, the stop hook fires and begins the review loop.
+```
+# Parse the result
+RESULT=$(~/.claude/hooks/lib/recursive-dev-helpers.sh init-review "$SESSION_ID")
+FIRST_TASK=$(echo "$RESULT" | jq -r '.firstTask')
+TASK_DESC=$(echo "$RESULT" | jq -r '.reviewInstruction.description')
+TASK_CRITERIA=$(echo "$RESULT" | jq -r '.reviewInstruction.criteria')
+PROJECT_DIR=$(echo "$RESULT" | jq -r '.reviewInstruction.projectDir')
+TASK_FILES=$(echo "$RESULT" | jq -r '.reviewInstruction.modifiedFiles')
+```
+
+Then tell the user: "Review phase initialized for session $SESSION_ID. Starting first review..."
+
+Then IMMEDIATELY spawn the review Task:
+
+```
+Task(
+  subagent_type: "general-purpose",
+  description: "Review task $FIRST_TASK",
+  prompt: "You are reviewing code for a development task. Review with fresh eyes — you have no context about how it was implemented.
+
+TASK: $FIRST_TASK
+DESCRIPTION: $TASK_DESC
+ACCEPTANCE CRITERIA: $TASK_CRITERIA
+PROJECT DIRECTORY: $PROJECT_DIR
+FILES MODIFIED: $TASK_FILES
+
+[Include full review instructions from the stop hook template]"
+)
+```
+
+After the Task completes, output EXACTLY:
+```
+REVIEW_RESULT: {"task": "$FIRST_TASK", "issues": <number>, "fixes": <number>, "summary": "<brief summary>"}
+```
+
+Then STOP. The hook will record the result and inject the next review instruction.
 
 **If already in review phase**, use `next-step` to determine what to do:
 

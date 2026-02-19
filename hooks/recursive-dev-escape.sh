@@ -39,9 +39,9 @@ case "$NORMALIZED" in
         TOTAL=$(echo "$STATE" | jq '[.taskStatuses | to_entries[]] | length')
 
         # Keep state files for potential resume (don't delete)
-        # Mark session as stopped by clearing currentTask and currentReviewTask
+        # Mark session as stopped by clearing currentTask, currentReviewTask, and currentDesignTask
         # This ensures the stop hook won't continue the session
-        NEW_STATE=$(echo "$STATE" | jq '.currentTask = null | .currentReviewTask = null | .stopped = true' 2>/dev/null)
+        NEW_STATE=$(echo "$STATE" | jq '.currentTask = null | .currentReviewTask = null | .currentDesignTask = null | .stopped = true' 2>/dev/null)
 
         # Only write if we got valid JSON back (safeguard against wiping the file)
         if [ -n "$NEW_STATE" ] && echo "$NEW_STATE" | jq -e . >/dev/null 2>&1; then
