@@ -85,15 +85,24 @@ For each task (leaves AND parents get identical treatment):
                     │
                     ▼
 ┌─────────────────────────────────────────────────────┐
-│ 2. Work on the task                                 │
+│ 2. Write tests FIRST                                │
 │    - TaskUpdate(status=in_progress)                 │
-│    - Write code, tests, documentation               │
+│    - Unit tests for logic/behavior                  │
+│    - E2E/UI tests whenever possible                 │
+│    - Tests define expected behavior before code     │
+└─────────────────────────────────────────────────────┘
+                    │
+                    ▼
+┌─────────────────────────────────────────────────────┐
+│ 3. Implement to make tests pass                     │
+│    - Write code to satisfy the tests                │
+│    - Run tests to verify and assist with debugging  │
 │    - For parents: integrate children as units       │
 └─────────────────────────────────────────────────────┘
                     │
                     ▼
 ┌─────────────────────────────────────────────────────┐
-│ 3. Stop hook fires → verification                   │
+│ 4. Stop hook fires → verification                   │
 │    - Reviews against task's criteria                │
 │    - Same process for ALL tasks at ALL levels       │
 └─────────────────────────────────────────────────────┘
@@ -244,7 +253,8 @@ This catches issues that only become visible when you see how the code fits into
 
 When a parent task becomes current (after all children pass):
 - The "work" is integration: ensuring children work together
-- May involve writing integration code, tests, or just verification
+- **Write integration tests first** that verify children combine correctly
+- Then write any integration code needed to make those tests pass
 - The parent's criteria define what needs to be true
 - code-path-diagrammer shows how children connect
 
@@ -428,9 +438,11 @@ Manually trigger the review phase. Use this when:
 
 The entire value of the review phase is that it uses **fresh Task subagents** with no dev context — fresh eyes on the code. The main session has full dev context and MUST NOT review files, run tests, read project code, or write review results. The stop hook handles ALL of that autonomously.
 
+**CRITICAL: Never combine or shortcut the post-dev phases.** Even after context loss, you MUST run design-documentation, per-task reviews, holistic review, and validation review as SEPARATE subagent invocations. Never batch them into "a combined design+review pass via a single subagent." See the "No Shortcuts or Combined Phases" section below.
+
 **Actions:**
 
-Use the helper script to initialize the review phase (this ensures correct JSON construction):
+Use `next-step` as the primary router to determine what phase needs to run:
 
 ```bash
 # Step 1: Find session for current project
@@ -445,20 +457,40 @@ fi
 # Step 3: Check current status
 ~/.claude/hooks/lib/recursive-dev-helpers.sh status "$SESSION_ID"
 
-# Step 4: Initialize review phase (if not already in review)
-~/.claude/hooks/lib/recursive-dev-helpers.sh init-review "$SESSION_ID"
+# Step 4: Determine next step (respects design-documentation → review ordering)
+~/.claude/hooks/lib/recursive-dev-helpers.sh next-step "$SESSION_ID"
 ```
 
+Then follow the routing table below based on the `nextStep` value.
+
+**If `nextStep` is `init_design`:** Design-documentation must run first:
+```bash
+~/.claude/hooks/lib/recursive-dev-helpers.sh init-design "$SESSION_ID"
+```
+Then STOP — the stop hook will guide through design-documentation, and after it completes, will automatically transition to review.
+
+**If `nextStep` is `design_complete`:** Design is done, initialize review:
+```bash
+~/.claude/hooks/lib/recursive-dev-helpers.sh init-review "$SESSION_ID"
+```
+Then proceed with the review subagent flow below.
+
+**If `nextStep` is `init_review` (legacy — should not occur with current code):** Initialize review directly:
+```bash
+~/.claude/hooks/lib/recursive-dev-helpers.sh init-review "$SESSION_ID"
+```
+Note: `init-review` guards against skipping design-documentation — it returns an error with `"suggestion": "init-design"` if design-docs weren't completed.
+
 The `init-review` command:
-- Marks all tasks as completed
-- Sets phase to "review"
+- **Guards against skipping design-documentation** — returns an error with `"suggestion": "init-design"` if design-documentation hasn't been completed
+- If design-docs are done: marks all tasks as completed, sets phase to "review"
 - Sets currentReviewTask to first task in order
 - Initializes reviewStatuses and reviewHistory
 - Preserves modifiedFiles if present
 - Validates JSON before writing
 - **Returns `reviewInstruction` with first task details**
 
-After running the helper, **IMMEDIATELY spawn the first review subagent** using the returned `reviewInstruction`:
+After running init-review successfully, **IMMEDIATELY spawn the first review subagent** using the returned `reviewInstruction`:
 
 ```
 # Parse the result
@@ -505,6 +537,10 @@ Then STOP. The hook will record the result and inject the next review instructio
 ```
 
 This returns one of:
+- `{"nextStep": "init_design"}` - Design-documentation hasn't run yet; must run before review
+- `{"nextStep": "continue_design", "currentTask": "T1.1"}` - Design-documentation is in progress
+- `{"nextStep": "design_task", "nextTask": "T1.2"}` - Next design task to process
+- `{"nextStep": "design_complete"}` - Design-documentation done, ready for review
 - `{"nextStep": "continue_per_task", "currentTask": "T1.1"}` - A per-task review is in progress, just stop and let the hook continue
 - `{"nextStep": "per_task_review", "nextTask": "T1.2"}` - Set the next task and let hook continue
 - `{"nextStep": "holistic_review"}` - All per-task reviews done, need holistic review
@@ -513,26 +549,41 @@ This returns one of:
 
 **For each case:**
 
-1. **continue_per_task**: Tell user "Review in progress at [task]. The stop hook will continue automatically." Then STOP.
+1. **init_design**: Design-documentation must run before review. Initialize it:
+   ```bash
+   ~/.claude/hooks/lib/recursive-dev-helpers.sh init-design "$SESSION_ID"
+   ```
+   Tell user: "Design-documentation phase starting. The stop hook will guide you through it."
+   Then STOP. The stop hook will inject design-documentation instructions.
 
-2. **per_task_review**: Run `set-task` to set the next task, then STOP:
+2. **continue_design** / **design_task**: Design-documentation is in progress. Tell user the stop hook will continue automatically. Then STOP.
+
+3. **design_complete**: Design-documentation is done. Initialize review, then spawn the first review subagent:
+   ```bash
+   ~/.claude/hooks/lib/recursive-dev-helpers.sh init-review "$SESSION_ID"
+   ```
+   Then proceed with the init-review success flow above (parse `reviewInstruction`, spawn review Task subagent, output REVIEW_RESULT, STOP).
+
+4. **continue_per_task**: Tell user "Review in progress at [task]. The stop hook will continue automatically." Then STOP.
+
+5. **per_task_review**: Run `set-task` to set the next task, then STOP:
    ```bash
    ~/.claude/hooks/lib/recursive-dev-helpers.sh set-task "$SESSION_ID" "<nextTask>"
    ```
 
-3. **holistic_review**: Run `set-task` with "HOLISTIC", then STOP:
+6. **holistic_review**: Run `set-task` with "HOLISTIC", then STOP:
    ```bash
    ~/.claude/hooks/lib/recursive-dev-helpers.sh set-task "$SESSION_ID" "HOLISTIC"
    ```
    Tell user: "Per-task reviews complete. Starting holistic review."
 
-4. **validation_review**: Run `set-task` with "VALIDATION", then STOP:
+7. **validation_review**: Run `set-task` with "VALIDATION", then STOP:
    ```bash
    ~/.claude/hooks/lib/recursive-dev-helpers.sh set-task "$SESSION_ID" "VALIDATION"
    ```
    Tell user: "Holistic review complete. Starting validation review."
 
-5. **complete**: Tell user "All reviews complete!" and summarize the review history.
+8. **complete**: Tell user "All reviews complete!" and summarize the review history.
 
 **CRITICAL: After setting up the next step, STOP. Do not do the review work yourself.** The stop hook will inject instructions for spawning Task subagents with fresh context.
 
@@ -606,6 +657,42 @@ claude -p "$PROMPT"
 This happens:
 - When a task becomes current (before work)
 - On verification failure (to diagnose issues)
+
+## CRITICAL: Test-First Development
+
+Every task — leaf or parent — must start with writing tests before writing implementation code:
+
+1. **Write tests first** — Unit tests for logic, E2E/UI tests whenever possible. Tests define the expected behavior and serve as the specification.
+2. **Implement to make tests pass** — Write the minimum code needed to satisfy the tests. Run tests continuously to verify progress and assist with debugging.
+3. **Tests are not optional** — Even if a task seems simple, write tests first. Simple tasks have a way of revealing edge cases once you formalize expected behavior in tests.
+
+This applies at every level:
+- **Leaf tasks**: Write unit tests and E2E tests that capture the task's verification criteria, then implement.
+- **Parent tasks**: Write integration tests that verify children work together, then write any integration code needed.
+
+## CRITICAL: No Shortcuts or Combined Phases
+
+**The entire value of the multi-phase review process depends on each phase running SEPARATELY with FRESH context.** Combining phases, batching reviews, or "streamlining" undermines the process and defeats its purpose.
+
+**NEVER do any of the following:**
+
+1. **Never combine design-documentation and review into a single subagent.** Design-doc and review are separate phases with different goals. Design-doc examines architecture and adds `@design` annotations. Review checks for bugs and fixes them. Each must use its own subagent(s).
+
+2. **Never combine per-task reviews, holistic review, and validation review into a single subagent.** Each review type exists for a specific reason:
+   - Per-task reviews verify each task against its acceptance criteria individually
+   - Holistic review examines how all pieces fit together as a system
+   - Validation review checks test coverage, edge cases, error handling, and integration
+   Each MUST be a separate subagent invocation.
+
+3. **Never skip a phase because "the code seems simple" or "there's low risk."** The holistic review in Phase 1 caught silent error swallowing that per-task reviews missed. The holistic review in Phase 4 caught URL encoding issues, missing useEffect deps, and empty state handling. Skipping phases means missing real bugs.
+
+4. **Never do review work in the main session.** The main session has full dev context and CANNOT provide "fresh eyes." Always delegate to Task subagents.
+
+5. **Never manually write state.json to skip through phases.** Use the helper scripts (`init-design`, `init-review`, `next-step`, `advance`) which enforce phase ordering and prerequisites.
+
+**If context is lost** (session restart, compaction), use `/recursive-dev review` which uses `next-step` to determine the correct phase — it will NOT skip phases.
+
+**If you're tempted to combine phases "for efficiency":** Don't. The phases exist because they catch different classes of bugs. A 2-minute subagent that catches a real bug is infinitely more valuable than saving 2 minutes by skipping it.
 
 ## Notes
 

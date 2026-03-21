@@ -123,6 +123,29 @@ init_review_phase() {
     return 1
   fi
 
+  # Check if design-documentation was completed before allowing review
+  if [ -f "$state_file" ]; then
+    local existing_phase=$(jq -r '.phase // "dev"' "$state_file" 2>/dev/null)
+
+    if [ "$existing_phase" = "dev" ] || [ "$existing_phase" = "design-documentation" ]; then
+      # Check that design-documentation has fully completed:
+      # 1. designHistory must have entries (design phase ran at all)
+      # 2. No designStatuses should be pending_design or in_progress (all tasks documented)
+      local has_design_history=$(jq -r 'if (.designHistory // []) | length > 0 then "true" else "false" end' "$state_file" 2>/dev/null)
+      local incomplete_design_count=$(jq -r '(.designStatuses // {} | to_entries | map(select(.value == "pending_design" or .value == "in_progress")) | length)' "$state_file" 2>/dev/null)
+
+      if [ "$has_design_history" != "true" ]; then
+        echo '{"success": false, "error": "Design-documentation phase has not been completed. Run init-design first to document design decisions before review.", "suggestion": "init-design"}'
+        return 1
+      fi
+
+      if [ "$incomplete_design_count" != "0" ] && [ -n "$incomplete_design_count" ]; then
+        echo "{\"success\": false, \"error\": \"Design-documentation is still in progress ($incomplete_design_count tasks remaining). Complete design-documentation before starting review.\", \"suggestion\": \"init-design\"}"
+        return 1
+      fi
+    fi
+  fi
+
   # Read tree to get task order
   local tree=$(cat "$tree_file" 2>/dev/null)
   if [ -z "$tree" ]; then
@@ -299,8 +322,14 @@ next_review_step() {
   fi
 
   if [ "$phase" = "dev" ]; then
-    echo '{"nextStep": "init_review", "reason": "Still in dev phase, need to initialize review"}'
+    echo '{"nextStep": "init_design", "reason": "Still in dev phase, need design-documentation before review"}'
     return 0
+  fi
+
+  if [ "$phase" = "design-documentation" ]; then
+    # Delegate to next_design_step for proper handling
+    next_design_step "$session_id"
+    return $?
   fi
 
   if [ "$phase" != "review" ]; then

@@ -15,6 +15,10 @@ A meta-skill that orchestrates the complete automated development workflow:
 5. **Design Documentation** — Document the as-built design via inline `@design` annotations
 6. **Review Phase** — Per-task reviews, holistic review, and validation review
 
+## Core Principle: Test-First Development
+
+Every phase of development must start with writing tests (unit tests for logic and E2E/UI tests whenever possible), and then those tests must be run to verify the work and assist with debugging. Tests define expected behavior before implementation code is written. This applies at every level — leaf tasks, parent integration tasks, and phase-level work.
+
 ## Workflow Overview
 
 ```
@@ -135,7 +139,10 @@ Tell user: "Task tree generated. Starting recursive development..."
 
 - Invoke: `Skill(skill: "recursive-dev", args: "start")`
 - Recursive-dev executes all tasks with verification
-- Review phase runs automatically (per-task, holistic, validation)
+- Design-documentation phase runs (separate subagent per task)
+- Review phase runs: per-task reviews → holistic review → validation review (each a SEPARATE subagent)
+
+**CRITICAL: Each post-dev phase MUST run as separate subagent invocations.** See the "No Shortcuts" section below.
 
 **Step 4: Phase Completion**
 
@@ -403,6 +410,29 @@ Location: `~/.claude/recursive-dev/project-<hash>.json`
 - `skipped` — User chose to skip
 - `failed` — Hit an error (recorded with error message)
 
+## CRITICAL: No Shortcuts in Post-Dev Phases
+
+**Every recursive-dev session includes 4 post-dev phases that MUST each run as separate subagent invocations. Never combine, batch, or skip them.**
+
+The 4 post-dev phases are:
+1. **Design-documentation** — Adds `@design` annotations. One subagent per task (or small batch).
+2. **Per-task reviews** — Each task reviewed against its criteria. One subagent per task (or small batch of related tasks).
+3. **Holistic review** — Reviews ALL files together for integration/consistency. One dedicated subagent.
+4. **Validation review** — Checks test coverage, edge cases, error handling. One dedicated subagent.
+
+**Why this matters:** In real usage:
+- Phase 1 holistic review caught silent error swallowing in storage adapters (per-task reviews missed it)
+- Phase 4 holistic review caught URL encoding bugs, missing useEffect deps, and empty state issues
+- Phase 4 per-task review caught a react-native-render-html v4→v6 API mismatch
+
+**Prohibited shortcuts:**
+- "Combined design+review pass via a single subagent" — NO. These are different activities requiring different prompts.
+- "Streamlined but fewer subagents" — NO. Per-task, holistic, and validation each catch different bug classes.
+- "Skip review because the code is simple UI" — NO. Simple UI code had 7 bugs caught only by separate review phases.
+- Manually writing state.json to mark phases complete without running them — NO. Use the helper scripts.
+
+**After context loss:** Use `/recursive-dev review` which calls `next-step` to determine where to resume. It will NOT skip phases.
+
 ## Important Notes
 
 1. **Only structured-planning is interactive** — Everything after runs automatically
@@ -413,6 +443,7 @@ Location: `~/.claude/recursive-dev/project-<hash>.json`
 6. **Failure prompts user** — Don't silently skip or fail
 7. **Preserve history** — Previous sessions kept for reference
 8. **Archive intelligently** — Collapse completed phases with useful summaries
+9. **Never combine post-dev phases** — Design-doc, per-task review, holistic review, and validation review are ALWAYS separate subagent invocations
 
 ## Plan File Detection
 

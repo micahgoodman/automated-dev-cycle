@@ -87,10 +87,11 @@ The brief answer becomes the inline verification criteria (added after `|` in th
 
 **The workflow for each tiny task:**
 1. Use Claude Code's plan mode to write a detailed plan for the current tiny task (in the "Current Task Plan" section below the tree)
-2. Exit plan mode and implement the task
-3. Run `/tree-planner mark Tx.x done` to update progress
-4. Re-enter plan mode, update "Current Task Plan" for the next tiny task
-5. Repeat until project complete
+2. Exit plan mode and **write tests first** — unit tests for logic and E2E/UI tests whenever possible
+3. Implement to make the tests pass, running tests to verify and assist with debugging
+4. Run `/tree-planner mark Tx.x done` to update progress
+5. Re-enter plan mode, update "Current Task Plan" for the next tiny task
+6. Repeat until project complete
 
 Each tiny task gets its own focused planning session. The tree provides the big picture; the Current Task Plan section holds the implementation details for whatever you're working on now.
 
