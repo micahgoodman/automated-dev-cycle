@@ -207,9 +207,11 @@ FILES MODIFIED DURING THIS TASK:
 REVIEW INSTRUCTIONS:
 Review the code for this task with fresh eyes, as if it were written by someone else. Check for gaps, bugs, cleanup needed, or other improvements to arrive at simple and robust code that works well for real-world users. There may be many changes needed (completely ok), or none (also completely ok).
 
-If you identify issues, double check your evaluation, then proceed with fixes directly. Fix anything you find — leave the code better than you found it.
+If you identify issues, double check your evaluation, then proceed with fixes directly. Fix anything you find — leave the code better than you found it. Said another way, anything that cleans up the code even slightly is worth it, even if it’s extra work (as long as it doesn’t add unnecessary complexity).
 
 Evaluate from multiple perspectives: edge cases, race conditions, error handling, correctness. Hold yourself to a high standard.
+
+Watch out for cases where you find a surface-level problem and identify an immediate surface-level fix that you know would add friction and tradeoffs in other places. That's almost always a sign that there's a deeper, root-cause issue, that can be mutually-reinforcing to the code if it's found and addressed.
 
 IMPORTANT — when you are done reviewing and fixing, output a summary line in EXACTLY this format as your very last line:
 REVIEW_RESULT: {\"issues\": N, \"fixes\": N, \"summary\": \"one sentence\"}
